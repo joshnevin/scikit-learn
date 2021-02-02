@@ -278,6 +278,134 @@ class GaussianProcessRegressor(MultiOutputMixin,
             raise
         self.alpha_ = cho_solve((self.L_, True), self.y_train_)  # Line 3
         return self
+    
+    def fit_phys(self, X, y, y_phys):
+        """Fit Gaussian process regression model with physical model.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features) or list of object
+            Feature vectors or other representations of training data.
+
+        y : array-like of shape (n_samples,) or (n_samples, n_targets)
+            Target values
+
+        Returns
+        -------
+        self : returns an instance of self.
+        """
+        if self.kernel is None:  # Use an RBF kernel as default
+            self.kernel_ = C(1.0, constant_value_bounds="fixed") \
+                * RBF(1.0, length_scale_bounds="fixed")
+        else:
+            self.kernel_ = clone(self.kernel)
+
+        self._rng = check_random_state(self.random_state)
+
+        if self.kernel_.requires_vector_input:
+            X, y = self._validate_data(X, y, multi_output=True, y_numeric=True,
+                                       ensure_2d=True, dtype="numeric")
+        else:
+            X, y = self._validate_data(X, y, multi_output=True, y_numeric=True,
+                                       ensure_2d=False, dtype=None)
+        # validate the physical model input data also
+        if self.kernel_.requires_vector_input:
+            X, y_phys = self._validate_data(X, y_phys, multi_output=True, y_numeric=True,
+                                       ensure_2d=True, dtype="numeric")
+        else:
+            X, y_phys = self._validate_data(X, y_phys, multi_output=True, y_numeric=True,
+                                       ensure_2d=False, dtype=None)
+
+        # Normalize target value
+        if self.normalize_y:
+            self._y_train_mean = np.mean(y, axis=0)
+            self._y_train_std = np.std(y, axis=0)
+            self._y_phys_mean = np.mean(y_phys, axis=0)
+            self._y_phys_std = np.std(y_phys, axis=0)
+
+            # Remove mean and make unit variance
+            y = (y - self._y_train_mean) / self._y_train_std
+            y_phys = (y_phys - self._y_phys_mean) / self._y_phys_std
+
+        else:
+            self._y_train_mean = np.zeros(1)
+            self._y_train_std = 1
+            self._y_phys_mean = np.zeros(1)
+            self._y_phys_std = 1
+
+        if np.iterable(self.alpha) \
+           and self.alpha.shape[0] != y.shape[0]:
+            if self.alpha.shape[0] == 1:
+                self.alpha = self.alpha[0]
+            else:
+                raise ValueError("alpha must be a scalar or an array"
+                                 " with same number of entries as y.(%d != %d)"
+                                 % (self.alpha.shape[0], y.shape[0]))
+        # this may cause an issue if non-scalar alpha is specified, ignore for now...
+        self.X_train_ = np.copy(X) if self.copy_X_train else X
+        self.y_train_ = np.copy(y) if self.copy_X_train else y
+        self.y_phys_ = np.copy(y_phys) if self.copy_X_train else y_phys
+
+        if self.optimizer is not None and self.kernel_.n_dims > 0:
+            # Choose hyperparameters based on maximizing the log-marginal
+            # likelihood (potentially starting from several initial values)
+            def obj_func(theta, eval_gradient=True):
+                if eval_gradient:
+                    lml, grad = self.log_marginal_likelihood_phys(
+                        theta, eval_gradient=True, clone_kernel=False)
+                    return -lml, -grad
+                else:
+                    return -self.log_marginal_likelihood_phys(theta,
+                                                         clone_kernel=False)
+
+            # First optimize starting from theta specified in kernel
+            optima = [(self._constrained_optimization(obj_func,
+                                                      self.kernel_.theta,
+                                                      self.kernel_.bounds))]
+
+            # Additional runs are performed from log-uniform chosen initial
+            # theta
+            if self.n_restarts_optimizer > 0:
+                if not np.isfinite(self.kernel_.bounds).all():
+                    raise ValueError(
+                        "Multiple optimizer restarts (n_restarts_optimizer>0) "
+                        "requires that all bounds are finite.")
+                bounds = self.kernel_.bounds
+                for iteration in range(self.n_restarts_optimizer):
+                    theta_initial = \
+                        self._rng.uniform(bounds[:, 0], bounds[:, 1])
+                    optima.append(
+                        self._constrained_optimization(obj_func, theta_initial,
+                                                       bounds))
+            # Select result from run with minimal (negative) log-marginal
+            # likelihood
+            lml_values = list(map(itemgetter(1), optima))
+            self.kernel_.theta = optima[np.argmin(lml_values)][0]
+            self.kernel_._check_bounds_params()
+
+            self.log_marginal_likelihood_value_ = -np.min(lml_values)
+        else:
+            self.log_marginal_likelihood_value_ = \
+                self.log_marginal_likelihood(self.kernel_.theta,
+                                             clone_kernel=False)
+
+        # Precompute quantities required for predictions which are independent
+        # of actual query points
+        K = self.kernel_(self.X_train_)
+        K[np.diag_indices_from(K)] += self.alpha
+        try:
+            self.L_ = cholesky(K, lower=True)  # Line 2
+            # self.L_ changed, self._K_inv needs to be recomputed
+            self._K_inv = None
+        except np.linalg.LinAlgError as exc:
+            exc.args = ("The kernel, %s, is not returning a "
+                        "positive definite matrix. Try gradually "
+                        "increasing the 'alpha' parameter of your "
+                        "GaussianProcessRegressor estimator."
+                        % self.kernel_,) + exc.args
+            raise
+        self.alpha_ = cho_solve((self.L_, True), self.y_train_)  # Line 3
+        return self
 
     def predict(self, X, return_std=False, return_cov=False):
         """Predict using the Gaussian process regression model
@@ -496,6 +624,105 @@ class GaussianProcessRegressor(MultiOutputMixin,
             log_likelihood_gradient_dims = \
                 0.5 * np.einsum("ijl,jik->kl", tmp, K_gradient)
             log_likelihood_gradient = log_likelihood_gradient_dims.sum(-1)
+
+        if eval_gradient:
+            return log_likelihood, log_likelihood_gradient
+        else:
+            return log_likelihood
+    
+    def log_marginal_likelihood_phys(self, theta=None, eval_gradient=False,
+                                clone_kernel=True):
+        """Returns log-marginal likelihood of theta for training data.
+
+        Parameters
+        ----------
+        theta : array-like of shape (n_kernel_params,) default=None
+            Kernel hyperparameters for which the log-marginal likelihood is
+            evaluated. If None, the precomputed log_marginal_likelihood
+            of ``self.kernel_.theta`` is returned.
+
+        eval_gradient : bool, default=False
+            If True, the gradient of the log-marginal likelihood with respect
+            to the kernel hyperparameters at position theta is returned
+            additionally. If True, theta must not be None.
+
+        clone_kernel : bool, default=True
+            If True, the kernel attribute is copied. If False, the kernel
+            attribute is modified, but may result in a performance improvement.
+
+        Returns
+        -------
+        log_likelihood : float
+            Log-marginal likelihood of theta for training data.
+
+        log_likelihood_gradient : ndarray of shape (n_kernel_params,), optional
+            Gradient of the log-marginal likelihood with respect to the kernel
+            hyperparameters at position theta.
+            Only returned when eval_gradient is True.
+        """
+        if theta is None:
+            if eval_gradient:
+                raise ValueError(
+                    "Gradient can only be evaluated for theta!=None")
+            return self.log_marginal_likelihood_value_
+
+        if clone_kernel:
+            kernel = self.kernel_.clone_with_theta(theta)
+        else:
+            kernel = self.kernel_
+            kernel.theta = theta
+
+        if eval_gradient:
+            K, K_gradient = kernel(self.X_train_, eval_gradient=True)
+        else:
+            K = kernel(self.X_train_)
+
+        K[np.diag_indices_from(K)] += self.alpha
+        try:
+            L = cholesky(K, lower=True)  # Line 2, following Algorithm 2.1 in GPML
+        except np.linalg.LinAlgError:
+            return (-np.inf, np.zeros_like(theta)) \
+                if eval_gradient else -np.inf
+
+        # Support multi-dimensional output of self.y_train_
+        y_train = self.y_train_
+        y_phys = self.y_phys_
+        
+        if y_train.ndim == 1:
+            y_train = y_train[:, np.newaxis]
+            y_phys = y_phys[:, np.newaxis]
+
+        alpha = cho_solve((L, True), y_train)  # Line 3
+        alpha_phys = cho_solve((L, True), y_phys)  
+
+        # Compute log-likelihood (compare line 7 in GPML)
+        log_likelihood_dims = -0.5 * np.einsum("ik,ik->k", y_train, alpha) 
+        log_likelihood_dims -= np.log(np.diag(L)).sum()  
+        log_likelihood_dims -= K.shape[0] / 2 * np.log(2 * np.pi) 
+
+        log_likelihood_dims_phys = -0.5 * np.einsum("ik,ik->k", y_phys, alpha_phys) 
+        log_likelihood_dims_phys -= np.log(np.diag(L)).sum()  # probably dont need the factor of 2...
+        log_likelihood_dims_phys -= K.shape[0] / 2 * np.log(2 * np.pi) # same for this line... 
+
+        log_likelihood = log_likelihood_dims.sum(-1)  # sum over dimensions
+        log_likelihood_phys = log_likelihood_dims_phys.sum(-1)
+        log_likelihood = log_likelihood + log_likelihood_phys
+
+        if eval_gradient:  # compare Equation 5.9 from GPML
+            tmp = np.einsum("ik,jk->ijk", alpha, alpha)  # k: output-dimension
+            tmp -= cho_solve((L, True), np.eye(K.shape[0]))[:, :, np.newaxis]
+            tmp_phys = np.einsum("ik,jk->ijk", alpha_phys, alpha_phys)  # alpha is the only bit that depends on y...
+            tmp_phys -= cho_solve((L, True), np.eye(K.shape[0]))[:, :, np.newaxis]
+            # Compute "0.5 * trace(tmp.dot(K_gradient))" without
+            # constructing the full matrix tmp.dot(K_gradient) since only
+            # its diagonal is required
+            log_likelihood_gradient_dims = \
+                0.5 * np.einsum("ijl,jik->kl", tmp, K_gradient) # trace
+            #log_likelihood_gradient = log_likelihood_gradient_dims.sum(-1)
+            log_likelihood_gradient_dims_phys = \
+                0.5 * np.einsum("ijl,jik->kl", tmp_phys, K_gradient) # trace
+            #log_likelihood_gradient_phys = log_likelihood_gradient_dims_phys.sum(-1)
+            log_likelihood_gradient = log_likelihood_gradient_dims.sum(-1) + log_likelihood_gradient_dims_phys.sum(-1)
 
         if eval_gradient:
             return log_likelihood, log_likelihood_gradient
