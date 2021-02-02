@@ -687,7 +687,10 @@ class GaussianProcessRegressor(MultiOutputMixin,
         # Support multi-dimensional output of self.y_train_
         y_train = self.y_train_
         y_phys = self.y_phys_
-        
+        try:
+            y_phys.shape[1]
+        except:
+            raise IndexError("need to reshape data using reshape(-1,1)")
         if y_train.ndim == 1:
             y_train = y_train[:, np.newaxis]
             y_phys = y_phys[:, np.newaxis]
