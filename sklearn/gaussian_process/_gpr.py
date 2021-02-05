@@ -279,7 +279,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
         self.alpha_ = cho_solve((self.L_, True), self.y_train_)  # Line 3
         return self
     
-    def fit_phys(self, X, y, y_phys):
+    def fit_phys(self, X, y, X_phys, y_phys):
         """Fit Gaussian process regression model with physical model.
 
         Parameters
@@ -310,10 +310,10 @@ class GaussianProcessRegressor(MultiOutputMixin,
                                        ensure_2d=False, dtype=None)
         # validate the physical model input data also
         if self.kernel_.requires_vector_input:
-            X, y_phys = self._validate_data(X, y_phys, multi_output=True, y_numeric=True,  # MODIFY: validate X_phys...
+            X_phys, y_phys = self._validate_data(X_phys, y_phys, multi_output=True, y_numeric=True,  # MODIFY: validate X_phys...
                                        ensure_2d=True, dtype="numeric")
         else:
-            X, y_phys = self._validate_data(X, y_phys, multi_output=True, y_numeric=True,
+            X_phys, y_phys = self._validate_data(X_phys, y_phys, multi_output=True, y_numeric=True,
                                        ensure_2d=False, dtype=None)
 
         # Normalize target value
@@ -343,6 +343,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
                                  % (self.alpha.shape[0], y.shape[0]))
         # this may cause an issue if non-scalar alpha is specified, ignore for now...
         self.X_train_ = np.copy(X) if self.copy_X_train else X     # MODIFY: create self.X_phys_
+        self.X_phys_ = np.copy(X_phys) if self.copy_X_train else X_phys     
         self.y_train_ = np.copy(y) if self.copy_X_train else y
         self.y_phys_ = np.copy(y_phys) if self.copy_X_train else y_phys
 
@@ -674,12 +675,16 @@ class GaussianProcessRegressor(MultiOutputMixin,
 
         if eval_gradient:
             K, K_gradient = kernel(self.X_train_, eval_gradient=True)   # MODIFY: need to define K_phys and K_gradient_phys...
+            K_phys, K_gradient_phys = kernel(self.X_phys_, eval_gradient=True)
         else:
             K = kernel(self.X_train_)
+            K_phys = kernel(self.X_phys_)
 
-        K[np.diag_indices_from(K)] += self.alpha   # MODIFY: need to add alpha to K_phys also - note that this will cause issues with non-scalar alpha
+        K[np.diag_indices_from(K)] += self.alpha 
+        K_phys[np.diag_indices_from(K_phys)] += self.alpha   # MODIFY: need to add alpha to K_phys also - note that this will cause issues with non-scalar alpha
         try:
-            L = cholesky(K, lower=True)  # Line 2, following Algorithm 2.1 in GPML   # MODIFY: need to define L_phys
+            L = cholesky(K, lower=True)
+            L_phys = cholesky(K_phys, lower=True)  # Line 2, following Algorithm 2.1 in GPML   # MODIFY: need to define L_phys
         except np.linalg.LinAlgError:
             return (-np.inf, np.zeros_like(theta)) \
                 if eval_gradient else -np.inf
@@ -696,7 +701,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
             y_phys = y_phys[:, np.newaxis]
 
         alpha = cho_solve((L, True), y_train)  # Line 3
-        alpha_phys = cho_solve((L, True), y_phys)     # MODIFY: will need to use L_phys here
+        alpha_phys = cho_solve((L_phys, True), y_phys)    # MODIFY: will need to use L_phys here
 
         # Compute log-likelihood (compare line 7 in GPML)
         log_likelihood_dims = -0.5 * np.einsum("ik,ik->k", y_train, alpha) 
@@ -704,8 +709,8 @@ class GaussianProcessRegressor(MultiOutputMixin,
         log_likelihood_dims -= K.shape[0] / 2 * np.log(2 * np.pi) 
 
         log_likelihood_dims_phys = -0.5 * np.einsum("ik,ik->k", y_phys, alpha_phys) 
-        log_likelihood_dims_phys -= np.log(np.diag(L)).sum()    # MODIFY: will need to use L_phys here
-        log_likelihood_dims_phys -= K.shape[0] / 2 * np.log(2 * np.pi)    # MODIFY: will need to use K_phys here
+        log_likelihood_dims_phys -= np.log(np.diag(L_phys)).sum()    # MODIFY: will need to use L_phys here
+        log_likelihood_dims_phys -= K_phys.shape[0] / 2 * np.log(2 * np.pi)    # MODIFY: will need to use K_phys here
 
         log_likelihood = log_likelihood_dims.sum(-1)  # sum over dimensions
         log_likelihood_phys = log_likelihood_dims_phys.sum(-1)
@@ -715,7 +720,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
             tmp = np.einsum("ik,jk->ijk", alpha, alpha)  # k: output-dimension
             tmp -= cho_solve((L, True), np.eye(K.shape[0]))[:, :, np.newaxis]
             tmp_phys = np.einsum("ik,jk->ijk", alpha_phys, alpha_phys)  # alpha is the only bit that depends on y...
-            tmp_phys -= cho_solve((L, True), np.eye(K.shape[0]))[:, :, np.newaxis]  # MODIFY: will need to use L_phys and K_phys here
+            tmp_phys -= cho_solve((L_phys, True), np.eye(K_phys.shape[0]))[:, :, np.newaxis]  # MODIFY: will need to use L_phys and K_phys here
             # Compute "0.5 * trace(tmp.dot(K_gradient))" without
             # constructing the full matrix tmp.dot(K_gradient) since only
             # its diagonal is required
@@ -723,7 +728,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
                 0.5 * np.einsum("ijl,jik->kl", tmp, K_gradient) # trace
             #log_likelihood_gradient = log_likelihood_gradient_dims.sum(-1)
             log_likelihood_gradient_dims_phys = \
-                0.5 * np.einsum("ijl,jik->kl", tmp_phys, K_gradient) # trace     # MODIFY: will need to use K_gradient_phys here
+                0.5 * np.einsum("ijl,jik->kl", tmp_phys, K_gradient_phys) # trace     # MODIFY: will need to use K_gradient_phys here
             #log_likelihood_gradient_phys = log_likelihood_gradient_dims_phys.sum(-1)
             log_likelihood_gradient = log_likelihood_gradient_dims.sum(-1) + log_likelihood_gradient_dims_phys.sum(-1)
 
