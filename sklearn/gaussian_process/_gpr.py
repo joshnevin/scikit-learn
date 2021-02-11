@@ -279,7 +279,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
         self.alpha_ = cho_solve((self.L_, True), self.y_train_)  # Line 3
         return self
     
-    def fit_phys(self, X, y, X_phys, y_phys):
+    def fit_phys(self, X, X_phys, y, y_phys):
         """Fit Gaussian process regression model with physical model.
 
         Parameters
@@ -309,12 +309,13 @@ class GaussianProcessRegressor(MultiOutputMixin,
             X, y = self._validate_data(X, y, multi_output=True, y_numeric=True,
                                        ensure_2d=False, dtype=None)
         # validate the physical model input data also
+            
         if self.kernel_.requires_vector_input:
             X_phys, y_phys = self._validate_data(X_phys, y_phys, multi_output=True, y_numeric=True,  # MODIFY: validate X_phys...
-                                       ensure_2d=True, dtype="numeric")
+                                        ensure_2d=True, dtype="numeric")
         else:
             X_phys, y_phys = self._validate_data(X_phys, y_phys, multi_output=True, y_numeric=True,
-                                       ensure_2d=False, dtype=None)
+                                        ensure_2d=False, dtype=None)
 
         # Normalize target value
         if self.normalize_y:
