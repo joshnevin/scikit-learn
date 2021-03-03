@@ -278,7 +278,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
             raise
         self.alpha_ = cho_solve((self.L_, True), self.y_train_)  # Line 3
         return self
-    
+
     def fit_phys(self, X, X_phys, y, y_phys):
         """Fit Gaussian process regression model with physical model.
 
@@ -309,7 +309,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
             X, y = self._validate_data(X, y, multi_output=True, y_numeric=True,
                                        ensure_2d=False, dtype=None)
         # validate the physical model input data also
-            
+
         if self.kernel_.requires_vector_input:
             X_phys, y_phys = self._validate_data(X_phys, y_phys, multi_output=True, y_numeric=True,  # MODIFY: validate X_phys...
                                         ensure_2d=True, dtype="numeric")
@@ -344,7 +344,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
                                  % (self.alpha.shape[0], y.shape[0]))
         # this may cause an issue if non-scalar alpha is specified, ignore for now...
         self.X_train_ = np.copy(X) if self.copy_X_train else X     # MODIFY: create self.X_phys_
-        self.X_phys_ = np.copy(X_phys) if self.copy_X_train else X_phys     
+        self.X_phys_ = np.copy(X_phys) if self.copy_X_train else X_phys
         self.y_train_ = np.copy(y) if self.copy_X_train else y
         self.y_phys_ = np.copy(y_phys) if self.copy_X_train else y_phys
 
@@ -388,7 +388,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
             self.log_marginal_likelihood_value_ = -np.min(lml_values)
         else:
             self.log_marginal_likelihood_value_ = \
-                self.log_marginal_likelihood(self.kernel_.theta,        # MODIFY: this should be changed to call log_marginal_likelihood_phys() 
+                self.log_marginal_likelihood_phys(self.kernel_.theta,        # MODIFY: this should be changed to call log_marginal_likelihood_phys()
                                              clone_kernel=False)        # method, in the case of no kernel specified...
 
         # Precompute quantities required for predictions which are independent
@@ -631,7 +631,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
             return log_likelihood, log_likelihood_gradient
         else:
             return log_likelihood
-    
+
     def log_marginal_likelihood_phys(self, theta=None, eval_gradient=False,
                                 clone_kernel=True):
         """Returns log-marginal likelihood of theta for training data.
@@ -681,7 +681,7 @@ class GaussianProcessRegressor(MultiOutputMixin,
             K = kernel(self.X_train_)
             K_phys = kernel(self.X_phys_)
 
-        K[np.diag_indices_from(K)] += self.alpha 
+        K[np.diag_indices_from(K)] += self.alpha
         K_phys[np.diag_indices_from(K_phys)] += self.alpha   # MODIFY: need to add alpha to K_phys also - note that this will cause issues with non-scalar alpha
         try:
             L = cholesky(K, lower=True)
@@ -705,11 +705,11 @@ class GaussianProcessRegressor(MultiOutputMixin,
         alpha_phys = cho_solve((L_phys, True), y_phys)    # MODIFY: will need to use L_phys here
 
         # Compute log-likelihood (compare line 7 in GPML)
-        log_likelihood_dims = -0.5 * np.einsum("ik,ik->k", y_train, alpha) 
-        log_likelihood_dims -= np.log(np.diag(L)).sum()  
-        log_likelihood_dims -= K.shape[0] / 2 * np.log(2 * np.pi) 
+        log_likelihood_dims = -0.5 * np.einsum("ik,ik->k", y_train, alpha)
+        log_likelihood_dims -= np.log(np.diag(L)).sum()
+        log_likelihood_dims -= K.shape[0] / 2 * np.log(2 * np.pi)
 
-        log_likelihood_dims_phys = -0.5 * np.einsum("ik,ik->k", y_phys, alpha_phys) 
+        log_likelihood_dims_phys = -0.5 * np.einsum("ik,ik->k", y_phys, alpha_phys)
         log_likelihood_dims_phys -= np.log(np.diag(L_phys)).sum()    # MODIFY: will need to use L_phys here
         log_likelihood_dims_phys -= K_phys.shape[0] / 2 * np.log(2 * np.pi)    # MODIFY: will need to use K_phys here
 
