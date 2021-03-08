@@ -1677,9 +1677,10 @@ class phys_kernel(StationaryKernelMixin, NormalizedKernelMixin, Kernel):
                 self.__class__.__name__, np.ravel(self.length_scale)[0])
 
     def _phys_f(self, X):
-        a = 1.0
-        b = 1.0
-        return a/X + b*X**2
+        a = 1.38e-5
+        b = 6.14e3
+        return a/X + b*np.multiply(X, X)
+        #return a/X + b*np.matmul(X, X.transpose())
 
 
 class Matern(RBF):
